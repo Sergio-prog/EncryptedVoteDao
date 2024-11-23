@@ -5,12 +5,18 @@ import "./fhevm/lib/TFHE.sol";
 import "./DaoToken.sol";
 
 contract EncryptedVoteDAO {
+    enum VoteResultEnum {
+        YES,
+        NO,
+        EQUAL
+    }
+
     DaoToken public daoToken;
     uint256 public proposalCount;
     uint256 public constant DEFAULT_PROPOSAL_DURATION = 3600;
 
     struct Proposal {
-        eaddress description;
+        string description;
         euint64 yesVotes;
         euint64 noVotes;
         eaddress proposer;
@@ -19,6 +25,11 @@ contract EncryptedVoteDAO {
     }
 
     mapping(uint256 => Proposal) public proposals;
+
+    event ProposalCreated(uint256 indexed id, address proposer, uint256 endTime);
+    event VoteSubmitted(uint256 indexed id, address voter, euint64 encryptedVote);
+    event DecryptionRequested(uint256 indexed proposalId);
+    event OutcomeDecided(uint256 indexed proposalId, bool passed);
 
     constructor(address _daoToken) {
         daoToken = DaoToken(_daoToken);
@@ -32,7 +43,6 @@ contract EncryptedVoteDAO {
         newProposal.yesVotes = TFHE.asEuint64(0); // Initialize votes
         newProposal.noVotes = TFHE.asEuint64(0);
         newProposal.proposer = TFHE.asEaddress(msg.sender);
-        msg.sender;
         newProposal.deadline = block.timestamp + DEFAULT_PROPOSAL_DURATION;
 
         proposals[proposalCount] = newProposal;
@@ -41,7 +51,7 @@ contract EncryptedVoteDAO {
     // Submit a vote (encrypted: 1 = YES, 0 = NO)
     function vote(uint256 proposalId, einput encryptedVote, bytes calldata inputProof) public {
         Proposal storage proposal = proposals[proposalId];
-        require(block.timestamp < proposal.endTime, "Voting period ended");
+        require(block.timestamp < proposal.deadline, "Voting period ended");
 
         euint64 vote = TFHE.asEuint64(encryptedVote, inputProof);
         ebool isYesVote = TFHE.eq(vote, TFHE.asEuint64(1)); // Check if YES vote
@@ -53,16 +63,33 @@ contract EncryptedVoteDAO {
         emit VoteSubmitted(proposalId, msg.sender, vote);
     }
 
-    // Allow results access to a specific address
-    function allowResults(uint256 proposalId, address allowedAddress) public {
+    // Gets the proposal results after deadline
+    function getResults(uint256 proposalId) public {
         Proposal storage proposal = proposals[proposalId];
-        require(block.timestamp >= proposal.endTime, "Voting period not over");
-        require(msg.sender == proposal.proposer, "Only proposer can allow results");
+        require(block.timestamp > proposal.deadline, "You can not view resulsts before proposal end time");
+        // Vote result
+        uint8 voteResult = 0;
+        if (TFHE.eq(proposal.noVotes, proposal.yesVotes) == true) {
+            voteResult = VoteResultEnum.EQUAL;
+        } else if (TFHE.gt(proposal.noVotes, proposal.yesVotes) == true) {
+            voteResult = VoteResultEnum.NO;
+        } else {
+            voteResult = VoteResultEnum.YES;
+        }
 
-        // Allow access to encrypted results for the specified address
-        TFHE.allow(proposal.yesVotes, allowedAddress);
-        TFHE.allow(proposal.noVotes, allowedAddress);
-
-        emit ResultsAllowed(proposalId, allowedAddress);
+        return voteResult;
     }
+
+    // // Allow results access to a specific address
+    // function allowResults(uint256 proposalId, address allowedAddress) public {
+    //     Proposal storage proposal = proposals[proposalId];
+    //     require(block.timestamp >= proposal.endTime, "Voting period not over");
+    //     require(msg.sender == proposal.proposer, "Only proposer can allow results");
+
+    //     // Allow access to encrypted results for the specified address
+    //     TFHE.allow(proposal.yesVotes, allowedAddress);
+    //     TFHE.allow(proposal.noVotes, allowedAddress);
+
+    //     emit ResultsAllowed(proposalId, allowedAddress);
+    // }
 }
